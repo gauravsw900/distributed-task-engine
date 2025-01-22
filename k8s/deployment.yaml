@@ -1,0 +1,177 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: task-engine
+---
+# Redis
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: task-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          command: ["redis-server", "--appendonly", "yes"]
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: task-engine
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+# API
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: task-engine-api
+  namespace: task-engine
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: task-engine-api
+  template:
+    metadata:
+      labels:
+        app: task-engine-api
+    spec:
+      containers:
+        - name: api
+          image: task-engine-api:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: ConnectionStrings__Redis
+              value: "redis:6379"
+            - name: ASPNETCORE_URLS
+              value: "http://+:5000"
+          readinessProbe:
+            httpGet:
+              path: /swagger
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: task-engine-api
+  namespace: task-engine
+spec:
+  selector:
+    app: task-engine-api
+  ports:
+    - port: 5000
+      targetPort: 5000
+---
+# Worker (horizontally scalable)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: task-engine-worker
+  namespace: task-engine
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: task-engine-worker
+  template:
+    metadata:
+      labels:
+        app: task-engine-worker
+    spec:
+      containers:
+        - name: worker
+          image: task-engine-worker:latest
+          env:
+            - name: ConnectionStrings__Redis
+              value: "redis:6379"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+---
+# HPA for auto-scaling workers
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker-hpa
+  namespace: task-engine
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: task-engine-worker
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: task-engine-ingress
+  namespace: task-engine
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  rules:
+    - host: task-engine.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: task-engine-api
+                port:
+                  number: 5000
+          - path: /hubs
+            pathType: Prefix
+            backend:
+              service:
+                name: task-engine-api
+                port:
+                  number: 5000
