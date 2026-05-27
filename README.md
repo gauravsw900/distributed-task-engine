@@ -94,3 +94,6 @@ Includes an HPA that scales workers between 1-10 replicas based on CPU.
 - Add dead letter queue for tasks that fail all retries
 - Prometheus metrics endpoint
 - Auth on the API
+
+## License
+MIT
